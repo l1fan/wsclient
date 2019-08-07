@@ -31,7 +31,7 @@ public class WSClient extends WebSocketListener {
      */
     private List<String> loopSendText = new ArrayList<>();
     private int interval;
-    private ScheduledFuture<?> intervalFuture;
+    private ScheduledFuture<?> cancelInterval;
 
     /**
      * text/binary message consumer
@@ -163,7 +163,7 @@ public class WSClient extends WebSocketListener {
         sendText.forEach(webSocket::send);
 
         if (loopSendText.size() > 0) {
-            intervalFuture = schedule.scheduleAtFixedRate(() -> loopSendText.forEach(webSocket::send), interval, interval, TimeUnit.SECONDS);
+            cancelInterval = schedule.scheduleAtFixedRate(() -> loopSendText.forEach(webSocket::send), interval, interval, TimeUnit.SECONDS);
         }
     }
 
@@ -188,34 +188,41 @@ public class WSClient extends WebSocketListener {
     @Override
     public void onClosed(WebSocket webSocket, int code, String reason) {
         if (listener != null) listener.onClosed(webSocket, code, reason);
-        Optional.ofNullable(onMap.get("closing")).ifPresent(b -> b.accept(webSocket, String.format("closed:[%s]%s",code,reason)));
 
-        _reconnect(webSocket);
+        int delay = _reconnect(webSocket);
+        Optional.ofNullable(onMap.get("closing"))
+                .ifPresent(b -> b.accept(webSocket, String.format("closed:[%s]%s,reconnect[%s sec]", code, reason, delay)));
     }
 
     @Override
     public void onClosing(WebSocket webSocket, int code, String reason) {
         if (listener != null) listener.onClosing(webSocket, code, reason);
-        Optional.ofNullable(onMap.get("closed")).ifPresent(b -> b.accept(webSocket, String.format("closing:[%s]%s",code,reason)));
+
+        Optional.ofNullable(onMap.get("closed"))
+                .ifPresent(b -> b.accept(webSocket, String.format("closing:[%s]%s", code, reason)));
     }
 
     @Override
     public void onFailure(WebSocket webSocket, Throwable t, Response response) {
         if (listener != null) listener.onFailure(webSocket, t, response);
-        Optional.ofNullable(onMap.get("error")).ifPresent(b -> b.accept(webSocket, t.getMessage()));
 
-        _reconnect(webSocket);
+        int delay = _reconnect(webSocket);
+        Optional.ofNullable(onMap.get("error"))
+                .ifPresent(b -> b.accept(webSocket, String.format("error:%s,reconnect[%s sec] ", t.getMessage(), delay)));
+
     }
 
-    private void _reconnect(WebSocket webSocket) {
+    private int _reconnect(WebSocket webSocket) {
         // stop old loop send
-        if (intervalFuture != null) intervalFuture.cancel(true);
+        if (cancelInterval != null) cancelInterval.cancel(true);
 
         // start new websocket
+        int delay = ThreadLocalRandom.current().nextInt(delayMin, delayMax);
         schedule.schedule(() -> {
             rawWebSocket = okhttp.newWebSocket(webSocket.request(), this);
             if (reconnectConsumer != null) reconnectConsumer.accept(rawWebSocket, webSocket);
-        }, ThreadLocalRandom.current().nextInt(delayMin, delayMax), TimeUnit.SECONDS);
+        }, delay, TimeUnit.SECONDS);
+        return delay;
     }
 
     /**
@@ -224,7 +231,7 @@ public class WSClient extends WebSocketListener {
      * @return
      */
     public boolean send(String text) {
-        if (rawWebSocket != null){
+        if (rawWebSocket != null) {
             return rawWebSocket.send(text);
         }
         return false;
@@ -245,9 +252,10 @@ public class WSClient extends WebSocketListener {
 
     /**
      * event listener
-     * @param event  "open", "closing", "closed", "error"
+     *
+     * @param event "open", "closing", "closed", "error"
      */
-    public WSClient on(String event,BiConsumer<WebSocket, String> eventConsumer){
+    public WSClient on(String event, BiConsumer<WebSocket, String> eventConsumer) {
         this.onMap.put(event, eventConsumer);
         return this;
     }
@@ -255,13 +263,13 @@ public class WSClient extends WebSocketListener {
     /**
      * intercept with okhttp websocketlistener, default is null
      */
-    public WSClient intercept(WebSocketListener listener){
+    public WSClient intercept(WebSocketListener listener) {
         this.listener = listener;
         return this;
     }
 
     /**
-     * use default okhttp client , single instance
+     * use default okhttp client , singleton instance
      */
     private static OkHttpClient _okhttp() {
         if (defaultOkhttp == null) {
