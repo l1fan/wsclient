@@ -6,7 +6,7 @@
 
   <groupId>com.l1fan.jlib</groupId>
   <artifactId>wsclient</artifactId>
-  <version>0.1</version>
+  <version>1.0</version>
 
   <name>wsclient</name>
   <url>https://github.com/l1fan/wsclient</url>
@@ -21,7 +21,7 @@
     <dependency>
       <groupId>com.squareup.okhttp3</groupId>
       <artifactId>okhttp</artifactId>
-      <version>3.14.0</version>
+      <version>3.14.4</version>
     </dependency>
     <dependency>
       <groupId>junit</groupId>
@@ -30,6 +30,14 @@
       <scope>test</scope>
     </dependency>
   </dependencies>
+
+  <distributionManagement>
+    <repository>
+      <id>github</id>
+      <name>GitHub l1fan Apache Maven Packages</name>
+      <url>https://maven.pkg.github.com/l1fan/wsclient</url>
+    </repository>
+  </distributionManagement>
 
   <build>
     <pluginManagement><!-- lock down plugins versions to avoid using Maven defaults (may be moved to parent pom) -->

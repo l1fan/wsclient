@@ -50,8 +50,13 @@ public class WSClient extends WebSocketListener {
      */
     private int delayMin = 1;
     private int delayMax = 10;
-    private BiConsumer<WebSocket, WebSocket> reconnectConsumer;
-    private Map<String, BiConsumer<WebSocket, String>> onMap = new HashMap();
+    private boolean reconnect = true;
+    private ScheduledFuture<?> cancelReconnect;
+
+    /**
+     * event map
+     */
+    private Map<String, BiConsumer<WebSocket, String>> onMap = new HashMap<>();
 
     /**
      * raw okhttp websocket instance
@@ -145,8 +150,11 @@ public class WSClient extends WebSocketListener {
         return this;
     }
 
-    public WSClient reconnect(BiConsumer<WebSocket, WebSocket> reconnectConsumer) {
-        this.reconnectConsumer = reconnectConsumer;
+    /**
+     * disable reconnect
+     */
+    public WSClient reconnect(boolean enable) {
+        this.reconnect = enable;
         return this;
     }
 
@@ -158,7 +166,7 @@ public class WSClient extends WebSocketListener {
     @Override
     public void onOpen(WebSocket webSocket, Response response) {
         if (listener != null) listener.onOpen(webSocket, response);
-        Optional.ofNullable(onMap.get("open")).ifPresent(b -> b.accept(webSocket, response.toString()));
+        emitEvent("open", webSocket, response.toString());
 
         sendText.forEach(webSocket::send);
 
@@ -188,45 +196,50 @@ public class WSClient extends WebSocketListener {
     @Override
     public void onClosed(WebSocket webSocket, int code, String reason) {
         if (listener != null) listener.onClosed(webSocket, code, reason);
+        emitEvent("closed", webSocket, String.format("closed:[%s]%s", code, reason));
 
-        int delay = _reconnect(webSocket);
-        Optional.ofNullable(onMap.get("closing"))
-                .ifPresent(b -> b.accept(webSocket, String.format("closed:[%s]%s,reconnect[%s sec]", code, reason, delay)));
+        _reconnect(webSocket, random());
     }
 
     @Override
     public void onClosing(WebSocket webSocket, int code, String reason) {
         if (listener != null) listener.onClosing(webSocket, code, reason);
-
-        Optional.ofNullable(onMap.get("closed"))
-                .ifPresent(b -> b.accept(webSocket, String.format("closing:[%s]%s", code, reason)));
+        emitEvent("closing", webSocket, String.format("closing:[%s]%s", code, reason));
     }
 
     @Override
     public void onFailure(WebSocket webSocket, Throwable t, Response response) {
         if (listener != null) listener.onFailure(webSocket, t, response);
+        emitEvent("error", webSocket, String.format("error:%s", t.getMessage()));
 
-        int delay = _reconnect(webSocket);
-        Optional.ofNullable(onMap.get("error"))
-                .ifPresent(b -> b.accept(webSocket, String.format("error:%s,reconnect[%s sec] ", t.getMessage(), delay)));
-
+        _reconnect(webSocket, random());
     }
 
-    private int _reconnect(WebSocket webSocket) {
-        // stop old loop send
-        if (cancelInterval != null) cancelInterval.cancel(true);
+    private void emitEvent(String event, WebSocket webSocket, String info) {
+        Optional.ofNullable(onMap.get(event))
+                .ifPresent(b -> b.accept(webSocket, info));
+    }
 
+    private void _reconnect(WebSocket webSocket, int delay) {
+        // cancel old loop send
+        if (cancelInterval != null ) cancelInterval.cancel(true);
+        if (cancelReconnect != null ) cancelReconnect.cancel(true);
+
+        if (!reconnect) return;
+        emitEvent("reconnect", rawWebSocket, String.format("reconnect: delay %s seconds", delay));
         // start new websocket
-        int delay = ThreadLocalRandom.current().nextInt(delayMin, delayMax);
-        schedule.schedule(() -> {
+        cancelReconnect = schedule.schedule(() -> {
             rawWebSocket = okhttp.newWebSocket(webSocket.request(), this);
-            if (reconnectConsumer != null) reconnectConsumer.accept(rawWebSocket, webSocket);
-        }, delay, TimeUnit.SECONDS);
-        return delay;
+        }, random(), TimeUnit.SECONDS);
+    }
+
+    private int random() {
+        return ThreadLocalRandom.current().nextInt(delayMin, delayMax + 1);
     }
 
     /**
      * send message , if you want message be saved and sent next time websocket connected , use autosend
+     *
      * @param text
      * @return
      */
@@ -248,6 +261,25 @@ public class WSClient extends WebSocketListener {
 
         rawWebSocket = okhttp.newWebSocket(req, this);
         return this;
+    }
+
+    public void pause() {
+        reconnect = false;
+        if (rawWebSocket != null) rawWebSocket.close(1000, "Normal Closure");
+    }
+
+    public void resume() {
+        reconnect = true;
+        _reconnect(rawWebSocket, 0);
+    }
+
+    /**
+     * terminal all
+     */
+    public void stop() {
+        pause();
+        okhttp = null;
+        schedule.shutdownNow();
     }
 
     /**
